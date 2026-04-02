@@ -118,8 +118,8 @@ class MainActivity : FlutterActivity() {
         return stats?.totalTimeInForeground ?: 0L
     }
 
-    private var inAppBaselineUsageMs: Long = 0
-    private val inAppRecurringLimitSeconds = 120L // 2 minutes
+    private val inAppDailyLimitSeconds = 120L // 2 minutes
+    private var isPopupTriggeredToday = false
 
     // Step 3: Run a periodic timer to check usage while the Activity is alive
     private fun startUsageTimer() {
@@ -128,28 +128,22 @@ class MainActivity : FlutterActivity() {
         timer?.scheduleAtFixedRate(object : TimerTask() {
             override fun run() {
                 if (hasUsageStatsPermission()) {
-                    val currentUsageMs = getAppUsageTime()
+                    val dailyUsageMs = getAppUsageTime()
+                    val dailyUsageSeconds = dailyUsageMs / 1000
                     
-                    // Initialize baseline if not set
-                    if (inAppBaselineUsageMs == 0L) {
-                        inAppBaselineUsageMs = currentUsageMs
-                        return
-                    }
-
-                    val relativeUsageSeconds = (currentUsageMs - inAppBaselineUsageMs) / 1000
-                    Log.d("MAIN", "In-app usage session: $relativeUsageSeconds / $inAppRecurringLimitSeconds seconds")
-
-                    // Trigger popup every 2 minutes of active use
-                    if (relativeUsageSeconds >= inAppRecurringLimitSeconds) {
+                    // Only trigger the popup ONCE if the daily limit is reached
+                    if (dailyUsageSeconds >= inAppDailyLimitSeconds && !isPopupTriggeredToday) {
                         runOnUiThread {
                             methodChannel?.invokeMethod("showPopup", "Your App")
-                            // Reset baseline for the next interval
-                            inAppBaselineUsageMs = currentUsageMs
+                            isPopupTriggeredToday = true
                         }
+                    } else if (dailyUsageSeconds < inAppDailyLimitSeconds) {
+                        // Reset flag if usage is below limit (e.g., at midnight)
+                        isPopupTriggeredToday = false
                     }
                 }
             }
-        }, 0, 5000) // Poll every 5 seconds
+        }, 0, 5000)
     }
 
     override fun onDestroy() {

@@ -36,21 +36,18 @@ class BackgroundUsageService : Service() {
     // Keeps track of the app currently in foreground to avoid frequent baseline resets
     private var lastObservedApp: String? = null
     
-    // The recurring interval (2 minutes = 120 seconds)
-    private val recurringLimitSeconds = 120L 
-    
-    // Tracks the exact time (in ms) when the user entered the current target app
-    private var sessionStartTimeMs: Long = 0
+    // The strict daily limit (2 minutes = 120 seconds)
+    private val dailyLimitSeconds = 120L 
 
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         
         createNotificationChannel()
-        startForeground(1, createNotification("Monitoring: 2-minute blocker active"))
+        startForeground(1, createNotification("Monitoring: 2-minute daily limit active"))
         startMonitoring()
         
-        Log.d("BG_SERVICE", "Service Created - Real-time Session Tracker active ✅")
+        Log.d("BG_SERVICE", "Service Created - Daily Limit Mode active ✅")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -60,8 +57,7 @@ class BackgroundUsageService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     /**
-     * Real-time monitoring that tracks how long the user has been 
-     * CONTINUOUSLY using a target app.
+     * Periodically checks if the daily limit for a target app has been reached.
      */
     private fun startMonitoring() {
         timer = Timer()
@@ -69,41 +65,21 @@ class BackgroundUsageService : Service() {
             override fun run() {
                 val currentApp = getForegroundApp()
                 
-                // Case 1: A target app (Facebook) is in the foreground
                 if (currentApp != null && targetPackages.contains(currentApp)) {
-                    val now = System.currentTimeMillis()
+                    val dailyUsageMs = getAppUsageTime(currentApp)
+                    val dailyUsageSeconds = dailyUsageMs / 1000
                     
-                    // If this is a NEW session (just opened or switched to this app)
-                    if (currentApp != lastObservedApp || sessionStartTimeMs == 0L) {
-                        sessionStartTimeMs = now
-                        lastObservedApp = currentApp
-                        Log.d("BG_SERVICE", "Session started for $currentApp at $now")
-                        return 
-                    }
-
-                    // Calculate real-time duration of the current session
-                    val sessionDurationSeconds = (now - sessionStartTimeMs) / 1000
+                    Log.d("BG_SERVICE", "Monitoring $currentApp: $dailyUsageSeconds / $dailyLimitSeconds used today")
                     
-                    Log.d("BG_SERVICE", "$currentApp live session: $sessionDurationSeconds / $recurringLimitSeconds sec")
-                    
-                    // If 2 minutes of CONTINUOUS usage has passed
-                    if (sessionDurationSeconds >= recurringLimitSeconds) {
+                    // If the daily time limit is reached, show the blocker immediately
+                    if (dailyUsageSeconds >= dailyLimitSeconds) {
                         Handler(Looper.getMainLooper()).post {
-                            showBlockOverlay(currentApp, sessionDurationSeconds)
-                            // Reset session start time to allow another 2 minutes if they re-enter
-                            sessionStartTimeMs = System.currentTimeMillis() 
+                            showBlockOverlay(currentApp, dailyUsageSeconds)
                         }
-                    }
-                } else {
-                    // Case 2: No target app is in foreground. 
-                    // Reset session tracking so it starts over next time they enter Facebook.
-                    if (currentApp != null && !targetPackages.contains(currentApp)) {
-                        lastObservedApp = null
-                        sessionStartTimeMs = 0L
                     }
                 }
             }
-        }, 0, 2000) // Poll every 2 seconds for high precision
+        }, 0, 3000) // Poll every 3 seconds
     }
 
     /**
@@ -156,7 +132,7 @@ class BackgroundUsageService : Service() {
         // Customize overlay UI components
         val titleText = overlayView?.findViewById<TextView>(R.id.overlay_title)
         val minutes = secondsUsed / 60
-        titleText?.text = "⏰ Time's Up!\nYou've been using $appName for $minutes min."
+        titleText?.text = "⏰ Daily Limit Reached!\nYou've used $appName for $minutes min today. Access blocked until tomorrow."
         
         val okButton = overlayView?.findViewById<Button>(R.id.overlay_button)
         okButton?.setOnClickListener {

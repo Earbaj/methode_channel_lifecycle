@@ -60,21 +60,29 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  bool _isDialogShowing = false;
+
   void _showLimitPopup(String appName) {
+    if (_isDialogShowing) return;
+    
+    _isDialogShowing = true;
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text("⏰ Limit Reached"),
-        content: Text("You have used $appName for 1 minute today."),
+        content: Text("You have used $appName for today's 2-minute limit."),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () {
+              Navigator.pop(context);
+              _isDialogShowing = false;
+            },
             child: const Text("OK"),
           ),
         ],
       ),
-    );
+    ).then((_) => _isDialogShowing = false);
   }
 
   @override

@@ -3,9 +3,9 @@
 A robust Android application built with Flutter and Kotlin that monitors app usage in the background and blocks specific applications (like Facebook) once a time limit is reached.
 
 ## 🚀 Key Features
-- **Real-Time Monitoring**: Tracks the exact duration of the current app session with high precision.
+- **Daily App Blocking**: Once a user hits the 2-minute limit today, the app is blocked for the rest of the day.
 - **Native App Blocking**: Shows a full-screen "System Alert" overlay that prevents interaction with the blocked app.
-- **Recurring Intervals**: Triggers every 2 minutes of active use, ensuring a fair but firm limit.
+- **Immediate Re-Blocking**: If an already-blocked app is reopened, the blocker appears immediately.
 - **Background Service**: Uses an Android Foreground Service to keep tracking alive even when the main app is closed.
 - **Smart Detection**: Uses `UsageStatsManager` and `queryUsageStats` for reliable foreground app detection.
 
@@ -13,7 +13,7 @@ A robust Android application built with Flutter and Kotlin that monitors app usa
 
 ## 🛠 How It Works
 The project uses three core Android APIs:
-1. **`UsageStatsManager`**: To detect which app is currently in the foreground and query historical usage data.
+1. **`UsageStatsManager`**: To query the total foreground time used for the current day.
 2. **`WindowManager`**: To draw a native overlay *over* other applications (like Facebook) when the limit is reached.
 3. **`Foreground Service`**: To ensure the monitoring logic continues to run in the background with a persistent notification.
 
@@ -94,7 +94,7 @@ This layout will appear *over* other apps like Facebook.
         android:id="@+id/overlay_title"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="⏰ Time's Up!"
+        android:text="⏰ Daily Limit Reached!"
         android:textColor="#FFFFFF"
         android:textSize="24sp"
         android:textStyle="bold" />
@@ -111,27 +111,23 @@ This layout will appear *over* other apps like Facebook.
 ### Step 3: Implement the Background Service (Kotlin)
 **File:** `android/app/src/main/kotlin/.../BackgroundUsageService.kt`
 
-This is the "brain" of the app. It tracks session time and shows the overlay.
+This service monitors the total daily usage.
 ```kotlin
 class BackgroundUsageService : Service() {
-    private var sessionStartTimeMs: Long = 0
-    private val limitSeconds = 120L // 2 minutes
+    private val limitSeconds = 120L // 2 minute daily limit
 
     private fun startMonitoring() {
         Timer().scheduleAtFixedRate(object : TimerTask() {
             override fun run() {
                 val currentApp = getForegroundApp()
                 if (isTargetApp(currentApp)) {
-                    if (sessionStartTimeMs == 0L) sessionStartTimeMs = System.currentTimeMillis()
-                    val duration = (System.currentTimeMillis() - sessionStartTimeMs) / 1000
-                    if (duration >= limitSeconds) {
-                        showOverlay()
+                    val dailyUsageMs = getAppUsageTime(currentApp)
+                    if (dailyUsageMs / 1000 >= limitSeconds) {
+                        showOverlay() // Block immediately if daily limit reached
                     }
-                } else {
-                    sessionStartTimeMs = 0L
                 }
             }
-        }, 0, 2000)
+        }, 0, 3000)
     }
 }
 ```
@@ -222,24 +218,22 @@ class MainActivity : FlutterActivity() {
         return usageStats[packageName]?.totalTimeInForeground ?: 0L
     }
 
-    private var inAppBaselineUsageMs: Long = 0
+    private val inAppDailyLimitSeconds = 120L // 2 minutes
+    private var isPopupTriggeredToday = false
     private fun startUsageTimer() {
         timer?.cancel()
         timer = Timer()
         timer?.scheduleAtFixedRate(object : TimerTask() {
             override fun run() {
                 if (hasUsageStatsPermission()) {
-                    val currentUsageMs = getAppUsageTime()
-                    if (inAppBaselineUsageMs == 0L) {
-                        inAppBaselineUsageMs = currentUsageMs
-                        return
-                    }
-                    val relativeUsageSeconds = (currentUsageMs - inAppBaselineUsageMs) / 1000
-                    if (relativeUsageSeconds >= 120) {
+                    val dailyUsageMs = getAppUsageTime()
+                    if (dailyUsageMs / 1000 >= inAppDailyLimitSeconds && !isPopupTriggeredToday) {
                         runOnUiThread {
                             methodChannel?.invokeMethod("showPopup", "Your App")
-                            inAppBaselineUsageMs = currentUsageMs
+                            isPopupTriggeredToday = true
                         }
+                    } else if (dailyUsageMs / 1000 < inAppDailyLimitSeconds) {
+                        isPopupTriggeredToday = false
                     }
                 }
             }
@@ -280,15 +274,13 @@ class BackgroundUsageService : Service() {
     private var windowManager: WindowManager? = null
     private var overlayView: View? = null
     private val targetPackages = listOf("com.facebook.katana", "com.facebook.lite")
-    private var lastObservedApp: String? = null
-    private var sessionStartTimeMs: Long = 0
-    private val recurringLimitSeconds = 120L 
+    private val dailyLimitSeconds = 120L 
 
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         createNotificationChannel()
-        startForeground(1, createNotification("Monitoring: 2-minute blocker active"))
+        startForeground(1, createNotification("Monitoring: 2-minute daily limit active"))
         startMonitoring()
     }
 
@@ -298,25 +290,16 @@ class BackgroundUsageService : Service() {
             override fun run() {
                 val currentApp = getForegroundApp()
                 if (currentApp != null && targetPackages.contains(currentApp)) {
-                    val now = System.currentTimeMillis()
-                    if (currentApp != lastObservedApp || sessionStartTimeMs == 0L) {
-                        sessionStartTimeMs = now
-                        lastObservedApp = currentApp
-                        return 
-                    }
-                    val duration = (now - sessionStartTimeMs) / 1000
-                    if (duration >= recurringLimitSeconds) {
+                    val dailyUsageMs = getAppUsageTime(currentApp)
+                    val dailyUsageSeconds = dailyUsageMs / 1000
+                    if (dailyUsageSeconds >= dailyLimitSeconds) {
                         Handler(Looper.getMainLooper()).post {
-                            showBlockOverlay(currentApp, duration)
-                            sessionStartTimeMs = System.currentTimeMillis() 
+                            showBlockOverlay(currentApp, dailyUsageSeconds)
                         }
                     }
-                } else if (currentApp != null && !targetPackages.contains(currentApp)) {
-                    lastObservedApp = null
-                    sessionStartTimeMs = 0L
                 }
             }
-        }, 0, 2000)
+        }, 0, 3000)
     }
 
     private fun getForegroundApp(): String? {
@@ -326,11 +309,22 @@ class BackgroundUsageService : Service() {
         return stats?.maxByOrNull { it.lastTimeUsed }?.packageName
     }
 
+    private fun getAppUsageTime(packageName: String): Long {
+        val usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+        val calendar = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+        }
+        val usageStats = usageStatsManager.queryAndAggregateUsageStats(calendar.timeInMillis, System.currentTimeMillis())
+        return usageStats[packageName]?.totalTimeInForeground ?: 0L
+    }
+
     private fun showBlockOverlay(appName: String, secondsUsed: Long) {
         if (overlayView != null) return
         val inflater = getSystemService(LAYOUT_INFLATER_SERVICE) as LayoutInflater
         overlayView = inflater.inflate(R.layout.overlay_layout, null)
-        overlayView?.findViewById<TextView>(R.id.overlay_title)?.text = "⏰ Time's Up!\nYou've been using $appName for ${secondsUsed/60} min."
+        overlayView?.findViewById<TextView>(R.id.overlay_title)?.text = "⏰ Daily Limit Reached!\nYou've used $appName for ${secondsUsed/60} min today."
         overlayView?.findViewById<Button>(R.id.overlay_button)?.setOnClickListener {
             removeOverlay()
             exitToHome()
@@ -433,4 +427,4 @@ private val targetPackages = listOf(
 ---
 
 ## 🚀 Summary
-By following these steps, you create a system that runs forever in the background, watches what app is open, and draws a native "gate" over it when your custom rules are met!
+By following these steps, you create a system that runs forever in the background, watches what app is open, and draws a native "gate" over it once the daily total usage limit is hit!

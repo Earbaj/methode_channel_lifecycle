@@ -482,7 +482,7 @@ class ScreenTimeService {
 4. **`startBackgroundService`**: A simple helper that tells Android to launch our `BackgroundUsageService` so tracking can happen even if the Flutter UI is closed.
 5. **`getUsageTime`**: Asks the Android side to return the current day's usage in milliseconds so we can display it on the Flutter screen.
 
----
+--- 
 
 ## 👨‍💻 How to Block Other Apps
 To add more apps to the block list, update the `targetPackages` list in `BackgroundUsageService.kt`:

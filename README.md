@@ -135,6 +135,8 @@ class BackgroundUsageService : Service() {
 ### Step 4: Configure the Method Channel (Full Code)
 **File:** `android/app/src/main/kotlin/.../MainActivity.kt`
 
+This file is the main entry point of our Android app. It handles requests from Flutter and runs a periodic timer to track daily usage of the tracker app itself.
+
 ```kotlin
 package com.example.methode_channel_lifecycle
 
@@ -247,8 +249,20 @@ class MainActivity : FlutterActivity() {
 }
 ```
 
+#### 🔍 Methods & Purposes in MainActivity:
+1. **`configureFlutterEngine`**: This is the mandatory setup function. It creates the **MethodChannel**, which acts as a "bridge" allowing Dart (Flutter) and Kotlin (Android) to talk to each other.
+2. **`setMethodCallHandler`**: This is a "Listener". It waits for Flutter to send commands like "start the service" or "check permissions" and directs them to the right Kotlin functions.
+3. **`hasUsageStatsPermission`**: A security check. It asks the Android system if the user has allowed this app to see the usage data of other apps.
+4. **`getAppUsageTime`**: This function queries the `UsageStatsManager`. It looks at the phone's history from midnight today until now to see how many total milliseconds **this specific app** has been used.
+5. **`startUsageTimer`**: A watchdog timer that runs every 5 seconds. It checks the daily usage and triggers the Flutter popup if the 2-minute limit is reached for the Tracker app itself.
+6. **`isPopupTriggeredToday`**: A "Flag" (boolean). It ensures the "Limit Reached" dialog only shows once per day in the Flutter UI, preventing it from popping up every 5 seconds.
+
+---
+
 ### Step 5: Implement the Tracker Service (Full Code)
 **File:** `android/app/src/main/kotlin/.../BackgroundUsageService.kt`
+
+This is the core "Engine" of the blocker. It runs as a Foreground Service, meaning it stays alive even if the user closes all apps.
 
 ```kotlin
 package com.example.methode_channel_lifecycle
@@ -273,25 +287,38 @@ class BackgroundUsageService : Service() {
     private var timer: Timer? = null
     private var windowManager: WindowManager? = null
     private var overlayView: View? = null
+    
+    // Target apps to monitor (e.g., Facebook)
     private val targetPackages = listOf("com.facebook.katana", "com.facebook.lite")
+    
+    // The strict daily limit (2 minutes = 120 seconds)
     private val dailyLimitSeconds = 120L 
 
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        
         createNotificationChannel()
         startForeground(1, createNotification("Monitoring: 2-minute daily limit active"))
         startMonitoring()
     }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        return START_STICKY
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
 
     private fun startMonitoring() {
         timer = Timer()
         timer?.scheduleAtFixedRate(object : TimerTask() {
             override fun run() {
                 val currentApp = getForegroundApp()
+                
                 if (currentApp != null && targetPackages.contains(currentApp)) {
                     val dailyUsageMs = getAppUsageTime(currentApp)
                     val dailyUsageSeconds = dailyUsageMs / 1000
+                    
                     if (dailyUsageSeconds >= dailyLimitSeconds) {
                         Handler(Looper.getMainLooper()).post {
                             showBlockOverlay(currentApp, dailyUsageSeconds)
@@ -299,7 +326,7 @@ class BackgroundUsageService : Service() {
                     }
                 }
             }
-        }, 0, 3000)
+        }, 0, 3000) // Poll every 3 seconds
     }
 
     private fun getForegroundApp(): String? {
@@ -321,14 +348,20 @@ class BackgroundUsageService : Service() {
     }
 
     private fun showBlockOverlay(appName: String, secondsUsed: Long) {
-        if (overlayView != null) return
+        if (overlayView != null) return // Prevent multiple overlays
+
         val inflater = getSystemService(LAYOUT_INFLATER_SERVICE) as LayoutInflater
         overlayView = inflater.inflate(R.layout.overlay_layout, null)
-        overlayView?.findViewById<TextView>(R.id.overlay_title)?.text = "⏰ Daily Limit Reached!\nYou've used $appName for ${secondsUsed/60} min today."
-        overlayView?.findViewById<Button>(R.id.overlay_button)?.setOnClickListener {
+
+        val titleText = overlayView?.findViewById<TextView>(R.id.overlay_title)
+        titleText?.text = "⏰ Daily Limit Reached!\nYou've used $appName for ${secondsUsed/60} min today."
+        
+        val okButton = overlayView?.findViewById<Button>(R.id.overlay_button)
+        okButton?.setOnClickListener {
             removeOverlay()
             exitToHome()
         }
+
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT, 
@@ -336,11 +369,15 @@ class BackgroundUsageService : Service() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         )
+
         windowManager?.addView(overlayView, params)
     }
 
     private fun removeOverlay() {
-        overlayView?.let { windowManager?.removeView(it); overlayView = null }
+        overlayView?.let { 
+            windowManager?.removeView(it)
+            overlayView = null 
+        }
     }
 
     private fun exitToHome() {
@@ -354,7 +391,8 @@ class BackgroundUsageService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel("UsageMonitor", "App Usage Monitor", NotificationManager.IMPORTANCE_LOW)
-            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
         }
     }
 
@@ -371,21 +409,43 @@ class BackgroundUsageService : Service() {
         timer?.cancel()
         removeOverlay()
     }
-    
-    override fun onBind(intent: Intent?): IBinder? = null
 }
 ```
 
+#### 🔍 Methods & Purposes in BackgroundUsageService:
+1. **`onCreate`**: The entry point of the service. It sets up the notification (required for Foreground Services) and starts the monitoring timer.
+2. **`startMonitoring`**: This is a "Loop". Every 3 seconds, it checks which app the user is looking at. If it's a target app (like Facebook), it checks the daily limit.
+3. **`getForegroundApp`**: This is the "Spy". It looks at the most recent system events to identify exactly which package (app) is currently on the screen.
+4. **`showBlockOverlay`**: The "Gatekeeper". It uses the Android **WindowManager** to draw a full-screen UI *over* the blocked app. This UI prevents the user from clicking anything in the restricted app.
+5. **`exitToHome`**: The "Enforcer". When the user clicks "OK" on the blocker, this sends a system command to minimize everything and return to the Home screen.
+6. **`createNotificationChannel`**: Required by Android 8.0+. It creates a category for our "Monitoring" notification so the user knows why the app is running in the background.
+
+---
+
 ### Step 6: Create the Flutter Service Interface
 **File:** `lib/screen_time_service.dart`
+
+This Dart class is the "Remote Control" for our Android features. It allows Flutter to trigger Kotlin code.
 
 ```dart
 import 'package:flutter/services.dart';
 
 class ScreenTimeService {
+  // Define the MethodChannel with a unique name matching the Android side
   static const MethodChannel _channel = MethodChannel('screen_time');
 
-  static Future<bool> checkUsagePermission() async {
+  /**
+   * Initializes the MethodChannel handler to listen for messages from native code.
+   */
+  static void init(Function(String) onShowPopup) {
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == "showPopup") {
+        onShowPopup(call.arguments.toString());
+      }
+    });
+  }
+
+  static Future<bool> checkPermission() async {
     return await _channel.invokeMethod('checkUsagePermission');
   }
 
@@ -401,15 +461,26 @@ class ScreenTimeService {
     await _channel.invokeMethod('requestOverlayPermission');
   }
 
-  static Future<void> startBackgroundService() async {
-    await _channel.invokeMethod('startBackgroundService');
+  static Future<bool> startBackgroundService() async {
+    return await _channel.invokeMethod('startBackgroundService');
   }
 
-  static Future<void> stopBackgroundService() async {
-    await _channel.invokeMethod('stopBackgroundService');
+  static Future<bool> stopBackgroundService() async {
+    return await _channel.invokeMethod('stopBackgroundService');
+  }
+
+  static Future<int> getUsageTime() async {
+    return await _channel.invokeMethod('getUsageTime');
   }
 }
 ```
+
+#### 🔍 Methods & Purposes in ScreenTimeService:
+1. **`MethodChannel`**: The Dart side of the bridge. It **must** have the exact same name (`'screen_time'`) as the one we defined in `MainActivity.kt`, otherwise they won't hear each other.
+2. **`init`**: Sets up a "Listener" on the Flutter side. When Android sends the `showPopup` command, this function catches it and runs the provided callback to show the dialog.
+3. **`_channel.invokeMethod`**: The "Messenger". It sends a string command (like `'startBackgroundService'`) to the Kotlin side and waits for a response (like `true` or `false`).
+4. **`startBackgroundService`**: A simple helper that tells Android to launch our `BackgroundUsageService` so tracking can happen even if the Flutter UI is closed.
+5. **`getUsageTime`**: Asks the Android side to return the current day's usage in milliseconds so we can display it on the Flutter screen.
 
 ---
 

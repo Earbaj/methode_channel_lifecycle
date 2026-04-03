@@ -6,8 +6,10 @@ A robust Android application built with Flutter and Kotlin that monitors app usa
 - **Daily App Blocking**: Once a user hits the 2-minute limit today, the app is blocked for the rest of the day.
 - **Native App Blocking**: Shows a full-screen "System Alert" overlay that prevents interaction with the blocked app.
 - **Immediate Re-Blocking**: If an already-blocked app is reopened, the blocker appears immediately.
+- **Auto-Dismiss Overlay**: The blocker overlay automatically disappears when the user exits the target app.
+- **Manual Reset**: Includes a "Reset Usage" feature for testing or bypassing the limit for the rest of the day.
 - **Background Service**: Uses an Android Foreground Service to keep tracking alive even when the main app is closed.
-- **Smart Detection**: Uses `UsageStatsManager` and `queryUsageStats` for reliable foreground app detection.
+- **Smart Detection**: Uses `UsageStatsManager` and `UsageEvents` for robust foreground app detection and accurate timing.
 
 ---
 
@@ -160,11 +162,9 @@ class MainActivity : FlutterActivity() {
         var methodChannel: MethodChannel? = null
     }
 
-    private var timer: Timer? = null
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        startUsageTimer()
+        // Foreground monitoring is handled by BackgroundUsageService
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -197,7 +197,14 @@ class MainActivity : FlutterActivity() {
                     stopService(Intent(this, BackgroundUsageService::class.java))
                     result.success(true)
                 }
-                "getUsageTime" -> result.success(getAppUsageTime())
+                "getUsageTime" -> {
+                    val pkg = call.argument<String>("packageName") ?: "com.facebook.katana"
+                    result.success(getAppUsageTime(pkg))
+                }
+                "resetUsage" -> {
+                    BackgroundUsageService.resetUsage(this)
+                    result.success(true)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -209,42 +216,19 @@ class MainActivity : FlutterActivity() {
         return mode == AppOpsManager.MODE_ALLOWED
     }
 
-    private fun getAppUsageTime(): Long {
+    private fun getAppUsageTime(targetPackage: String): Long {
         val usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val calendar = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, 0)
             set(Calendar.MINUTE, 0)
             set(Calendar.SECOND, 0)
         }
-        val usageStats = usageStatsManager.queryAndAggregateUsageStats(calendar.timeInMillis, System.currentTimeMillis())
-        return usageStats[packageName]?.totalTimeInForeground ?: 0L
-    }
+        val midnight = calendar.timeInMillis
+        val manualReset = BackgroundUsageService.getManualResetTime(this)
+        val startTime = Math.max(midnight, manualReset)
 
-    private val inAppDailyLimitSeconds = 120L // 2 minutes
-    private var isPopupTriggeredToday = false
-    private fun startUsageTimer() {
-        timer?.cancel()
-        timer = Timer()
-        timer?.scheduleAtFixedRate(object : TimerTask() {
-            override fun run() {
-                if (hasUsageStatsPermission()) {
-                    val dailyUsageMs = getAppUsageTime()
-                    if (dailyUsageMs / 1000 >= inAppDailyLimitSeconds && !isPopupTriggeredToday) {
-                        runOnUiThread {
-                            methodChannel?.invokeMethod("showPopup", "Your App")
-                            isPopupTriggeredToday = true
-                        }
-                    } else if (dailyUsageMs / 1000 < inAppDailyLimitSeconds) {
-                        isPopupTriggeredToday = false
-                    }
-                }
-            }
-        }, 0, 5000)
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        timer?.cancel()
+        val usageStats = usageStatsManager.queryAndAggregateUsageStats(startTime, System.currentTimeMillis())
+        return usageStats[targetPackage]?.totalTimeInForeground ?: 0L
     }
 }
 ```
@@ -284,130 +268,36 @@ import java.util.*
 
 class BackgroundUsageService : Service() {
 
-    private var timer: Timer? = null
-    private var windowManager: WindowManager? = null
-    private var overlayView: View? = null
-    
-    // Target apps to monitor (e.g., Facebook)
-    private val targetPackages = listOf("com.facebook.katana", "com.facebook.lite")
-    
-    // The strict daily limit (2 minutes = 120 seconds)
-    private val dailyLimitSeconds = 120L 
-
-    override fun onCreate() {
-        super.onCreate()
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        
-        createNotificationChannel()
-        startForeground(1, createNotification("Monitoring: 2-minute daily limit active"))
-        startMonitoring()
+    companion object {
+        fun resetUsage(context: Context) { /* SharedPreferences logic */ }
+        fun getManualResetTime(context: Context): Long { /* ... */ }
     }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        return START_STICKY
-    }
-
-    override fun onBind(intent: Intent?): IBinder? = null
 
     private fun startMonitoring() {
         timer = Timer()
         timer?.scheduleAtFixedRate(object : TimerTask() {
             override fun run() {
                 val currentApp = getForegroundApp()
-                
-                if (currentApp != null && targetPackages.contains(currentApp)) {
-                    val dailyUsageMs = getAppUsageTime(currentApp)
-                    val dailyUsageSeconds = dailyUsageMs / 1000
-                    
-                    if (dailyUsageSeconds >= dailyLimitSeconds) {
-                        Handler(Looper.getMainLooper()).post {
-                            showBlockOverlay(currentApp, dailyUsageSeconds)
-                        }
+                if (targetPackages.contains(currentApp)) {
+                    val dailyUsageMs = getAppUsageTime(currentApp!!)
+                    if (dailyUsageMs/1000 >= dailyLimitSeconds) {
+                        showBlockOverlay(currentApp, dailyUsageMs/1000)
+                    } else {
+                        removeOverlay() // Auto-dismiss if limit not reached
                     }
+                } else {
+                    removeOverlay() // Auto-dismiss if not in target app
                 }
             }
-        }, 0, 3000) // Poll every 3 seconds
-    }
-
-    private fun getForegroundApp(): String? {
-        val usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-        val time = System.currentTimeMillis()
-        val stats = usageStatsManager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, time - 60000, time)
-        return stats?.maxByOrNull { it.lastTimeUsed }?.packageName
+        }, 0, 3000)
     }
 
     private fun getAppUsageTime(packageName: String): Long {
-        val usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-        val calendar = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-        }
-        val usageStats = usageStatsManager.queryAndAggregateUsageStats(calendar.timeInMillis, System.currentTimeMillis())
-        return usageStats[packageName]?.totalTimeInForeground ?: 0L
-    }
-
-    private fun showBlockOverlay(appName: String, secondsUsed: Long) {
-        if (overlayView != null) return // Prevent multiple overlays
-
-        val inflater = getSystemService(LAYOUT_INFLATER_SERVICE) as LayoutInflater
-        overlayView = inflater.inflate(R.layout.overlay_layout, null)
-
-        val titleText = overlayView?.findViewById<TextView>(R.id.overlay_title)
-        titleText?.text = "⏰ Daily Limit Reached!\nYou've used $appName for ${secondsUsed/60} min today."
-        
-        val okButton = overlayView?.findViewById<Button>(R.id.overlay_button)
-        okButton?.setOnClickListener {
-            removeOverlay()
-            exitToHome()
-        }
-
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT, 
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        )
-
-        windowManager?.addView(overlayView, params)
-    }
-
-    private fun removeOverlay() {
-        overlayView?.let { 
-            windowManager?.removeView(it)
-            overlayView = null 
-        }
-    }
-
-    private fun exitToHome() {
-        val intent = Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_HOME)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        startActivity(intent)
-    }
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel("UsageMonitor", "App Usage Monitor", NotificationManager.IMPORTANCE_LOW)
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
-        }
-    }
-
-    private fun createNotification(content: String): Notification {
-        return NotificationCompat.Builder(this, "UsageMonitor")
-            .setContentTitle("Screen Time Tracker")
-            .setContentText(content)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .build()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        timer?.cancel()
-        removeOverlay()
+        val midnight = midnightCalendar().timeInMillis
+        val manualReset = getManualResetTime(this)
+        val startTime = Math.max(midnight, manualReset)
+        // Use UsageEvents for strict accumulation after startTime
+        return calculateUsageFromEvents(packageName, startTime)
     }
 }
 ```
@@ -469,8 +359,12 @@ class ScreenTimeService {
     return await _channel.invokeMethod('stopBackgroundService');
   }
 
-  static Future<int> getUsageTime() async {
-    return await _channel.invokeMethod('getUsageTime');
+  static Future<int> getUsageTime({String packageName = "com.facebook.katana"}) async {
+    return await _channel.invokeMethod('getUsageTime', {'packageName': packageName});
+  }
+
+  static Future<bool> resetUsage() async {
+    return await _channel.invokeMethod('resetUsage');
   }
 }
 ```

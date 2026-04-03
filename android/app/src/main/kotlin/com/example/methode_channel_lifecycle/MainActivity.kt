@@ -25,8 +25,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Start a local timer to check this app's usage while it's in the foreground
-        startUsageTimer()
+        // Redundant in-app timer removed to focus on background app monitoring
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -76,8 +75,14 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
                 "getUsageTime" -> {
-                    // Return today's usage time for this app
-                    result.success(getAppUsageTime())
+                    // Return today's usage time for a specific app (default Facebook)
+                    val pkg = call.argument<String>("packageName") ?: "com.facebook.katana"
+                    result.success(getAppUsageTime(pkg))
+                }
+                "resetUsage" -> {
+                    // Trigger manual reset in the background service
+                    BackgroundUsageService.resetUsage(this)
+                    result.success(true)
                 }
                 else -> {
                     result.notImplemented()
@@ -99,55 +104,28 @@ class MainActivity : FlutterActivity() {
         return mode == AppOpsManager.MODE_ALLOWED
     }
 
-    // Step 2: Query UsageStatsManager to get today's foreground time for this app (packageName)
-    private fun getAppUsageTime(): Long {
+    // Step 2: Query UsageStatsManager to get usage time since midnight or last reset
+    private fun getAppUsageTime(targetPackage: String): Long {
         val usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-        
-        // Set calendar to start of today (midnight)
         val calendar = Calendar.getInstance()
         calendar.set(Calendar.HOUR_OF_DAY, 0)
         calendar.set(Calendar.MINUTE, 0)
         calendar.set(Calendar.SECOND, 0)
         
-        val startTime = calendar.timeInMillis
+        val midnight = calendar.timeInMillis
+        val manualReset = BackgroundUsageService.getManualResetTime(this)
+        val startTime = Math.max(midnight, manualReset)
         val endTime = System.currentTimeMillis()
 
-        // Query and aggregate stats for the current day
+        if (startTime >= endTime) return 0L
+
+        // Use the aggregate stats for the UI display
         val usageStats = usageStatsManager.queryAndAggregateUsageStats(startTime, endTime)
-        val stats = usageStats[packageName]
+        val stats = usageStats[targetPackage]
         return stats?.totalTimeInForeground ?: 0L
-    }
-
-    private val inAppDailyLimitSeconds = 120L // 2 minutes
-    private var isPopupTriggeredToday = false
-
-    // Step 3: Run a periodic timer to check usage while the Activity is alive
-    private fun startUsageTimer() {
-        timer?.cancel()
-        timer = Timer()
-        timer?.scheduleAtFixedRate(object : TimerTask() {
-            override fun run() {
-                if (hasUsageStatsPermission()) {
-                    val dailyUsageMs = getAppUsageTime()
-                    val dailyUsageSeconds = dailyUsageMs / 1000
-                    
-                    // Only trigger the popup ONCE if the daily limit is reached
-                    if (dailyUsageSeconds >= inAppDailyLimitSeconds && !isPopupTriggeredToday) {
-                        runOnUiThread {
-                            methodChannel?.invokeMethod("showPopup", "Your App")
-                            isPopupTriggeredToday = true
-                        }
-                    } else if (dailyUsageSeconds < inAppDailyLimitSeconds) {
-                        // Reset flag if usage is below limit (e.g., at midnight)
-                        isPopupTriggeredToday = false
-                    }
-                }
-            }
-        }, 0, 5000)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        timer?.cancel()
     }
 }

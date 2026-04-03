@@ -97,15 +97,30 @@ class ScreenTimeService {
   }
 
   /**
-   * Retrieves the total usage time for THIS app today in milliseconds.
+   * Retrieves the total usage time for a specific app today in milliseconds.
+   * Default is Facebook.
    */
-  static Future<int> getUsageTime() async {
+  static Future<int> getUsageTime({String packageName = "com.facebook.katana"}) async {
     try {
-      final int usageTime = await _channel.invokeMethod('getUsageTime');
+      final int usageTime = await _channel.invokeMethod('getUsageTime', {
+        'packageName': packageName,
+      });
       return usageTime;
     } on PlatformException catch (e) {
       print("Error getting usage time: ${e.message}");
       return 0;
+    }
+  }
+
+  /**
+   * Resets the usage counter for today (useful for testing).
+   */
+  static Future<bool> resetUsage() async {
+    try {
+      return await _channel.invokeMethod('resetUsage');
+    } on PlatformException catch (e) {
+      print("Error resetting usage: ${e.message}");
+      return false;
     }
   }
 }

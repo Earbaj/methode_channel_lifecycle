@@ -52,7 +52,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _refreshStatus() async {
     bool usage = await ScreenTimeService.checkPermission();
     bool overlay = await ScreenTimeService.checkOverlayPermission();
-    int time = await ScreenTimeService.getUsageTime();
+    // Get usage for Facebook instead of this app
+    int time = await ScreenTimeService.getUsageTime(packageName: "com.facebook.katana");
     setState(() {
       _usagePermission = usage;
       _overlayPermission = overlay;
@@ -138,20 +139,41 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 32),
               Center(
                 child: Text(
-                  "Today's usage (This app): $_usageMinutes min",
-                  style: const TextStyle(fontSize: 16),
+                  "Facebook usage today: $_usageMinutes min",
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.blueAccent),
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 10),
+              const Center(
+                child: Text(
+                  "Daily Limit: 2 minutes",
+                  style: TextStyle(fontSize: 14, color: Colors.grey),
+                ),
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton.icon(
+                onPressed: () async {
+                  bool success = await ScreenTimeService.resetUsage();
+                  if (success) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("Usage reset successfully! ✅"))
+                    );
+                    _refreshStatus();
+                  }
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                icon: const Icon(Icons.restore),
+                label: const Text("Reset Usage for Testing"),
+              ),
+              const SizedBox(height: 12),
               ElevatedButton.icon(
                 onPressed: _refreshStatus,
                 icon: const Icon(Icons.refresh),
-                label: const Text("Refresh Permissions"),
+                label: const Text("Refresh Status"),
               ),
             ],
           ),
-        ),
-      ),
+      )  ),
     );
   }
 

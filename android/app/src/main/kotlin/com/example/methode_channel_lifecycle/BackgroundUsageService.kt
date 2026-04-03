@@ -21,6 +21,23 @@ import java.util.*
  * It shows a native overlay when a time limit is reached for specific apps.
  */
 class BackgroundUsageService : Service() {
+    
+    companion object {
+        private const val PREFS_NAME = "ScreenTimePrefs"
+        private const val KEY_RESET_TIME = "manual_reset_time"
+        
+        fun resetUsage(context: Context) {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit().putLong(KEY_RESET_TIME, System.currentTimeMillis()).apply()
+            Log.d("BG_SERVICE", "Manual usage reset triggered ✅")
+        }
+        
+        fun getManualResetTime(context: Context): Long {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            return prefs.getLong(KEY_RESET_TIME, 0L)
+        }
+    }
+
 
     private var timer: Timer? = null
     private var windowManager: WindowManager? = null
@@ -76,6 +93,16 @@ class BackgroundUsageService : Service() {
                         Handler(Looper.getMainLooper()).post {
                             showBlockOverlay(currentApp, dailyUsageSeconds)
                         }
+                    } else {
+                        // Limit not reached, make sure overlay is hidden
+                        Handler(Looper.getMainLooper()).post {
+                            removeOverlay()
+                        }
+                    }
+                } else {
+                    // Not in a target app, remove overlay
+                    Handler(Looper.getMainLooper()).post {
+                        removeOverlay()
                     }
                 }
             }
@@ -114,9 +141,44 @@ class BackgroundUsageService : Service() {
         calendar.set(Calendar.MINUTE, 0)
         calendar.set(Calendar.SECOND, 0)
         
-        // Sum up all usage for this package starting from midnight today
-        val usageStats = usageStatsManager.queryAndAggregateUsageStats(calendar.timeInMillis, System.currentTimeMillis())
-        return usageStats[packageName]?.totalTimeInForeground ?: 0L
+        val midnight = calendar.timeInMillis
+        val manualReset = getManualResetTime(this)
+        
+        // We only care about usage after the LATEST of (midnight OR manual reset)
+        val startTime = Math.max(midnight, manualReset)
+        val endTime = System.currentTimeMillis()
+
+        if (startTime >= endTime) return 0L
+
+        // queryAndAggregateUsageStats sometimes includes usage from slightly before startTime
+        // if the session spanned across the startTime boundary. 
+        // For strictness, we use queryEvents to sum up only recent foreground time.
+        var totalTimeMs = 0L
+        val events = usageStatsManager.queryEvents(startTime, endTime)
+        val event = UsageEvents.Event()
+        
+        var startTimeForApp = 0L
+        
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+            if (event.packageName == packageName) {
+                if (event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND) {
+                    startTimeForApp = event.timeStamp
+                } else if (event.eventType == UsageEvents.Event.MOVE_TO_BACKGROUND) {
+                    if (startTimeForApp != 0L) {
+                        totalTimeMs += (event.timeStamp - startTimeForApp)
+                        startTimeForApp = 0L
+                    }
+                }
+            }
+        }
+        
+        // If app is currently in foreground, add time since last MOVE_TO_FOREGROUND
+        if (startTimeForApp != 0L) {
+            totalTimeMs += (endTime - startTimeForApp)
+        }
+
+        return totalTimeMs
     }
 
     /**

@@ -2,6 +2,11 @@
 
 A robust Android application built with Flutter and Kotlin that monitors app usage in the background and blocks specific applications (like Facebook) once a time limit is reached.
 
+---
+### 📖 New to this?
+Check out our [**Beginner's Guide**](file:///home/earbaj/StudioProjects/methode_channel_lifecycle/BEGINNER_GUIDE.md) for a step-by-step breakdown of how the whole project works and the logic behind it!
+---
+
 ## 🚀 Key Features
 - **Daily App Blocking**: Once a user hits the 2-minute limit today, the app is blocked for the rest of the day.
 - **Native App Blocking**: Shows a full-screen "System Alert" overlay that prevents interaction with the blocked app.

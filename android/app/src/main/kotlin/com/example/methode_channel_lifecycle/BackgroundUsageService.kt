@@ -46,6 +46,9 @@ class BackgroundUsageService : Service() {
     // Target apps to monitor (e.g., Facebook)
     private val targetPackages = listOf("com.facebook.katana", "com.facebook.lite")
 
+    // Prevents immediate re-triggering after clicking OK
+    private var justDismissedApp: String? = null
+
     // Maps each package to its "baseline" usage count
     // When current - baseline >= limit, we trigger the popup and reset baseline
     private val baselineUsageMap = mutableMapOf<String, Long>()
@@ -81,8 +84,17 @@ class BackgroundUsageService : Service() {
         timer?.scheduleAtFixedRate(object : TimerTask() {
             override fun run() {
                 val currentApp = getForegroundApp()
+
+                // Reset dismissal flag if the user has switched apps
+                if (currentApp != justDismissedApp) {
+                    justDismissedApp = null
+                }
                 
                 if (currentApp != null && targetPackages.contains(currentApp)) {
+                    // Skip showing if this app was JUST dismissed via the OK button
+                    if (currentApp == justDismissedApp) return
+
+
                     val dailyUsageMs = getAppUsageTime(currentApp)
                     val dailyUsageSeconds = dailyUsageMs / 1000
                     
@@ -198,6 +210,7 @@ class BackgroundUsageService : Service() {
         
         val okButton = overlayView?.findViewById<Button>(R.id.overlay_button)
         okButton?.setOnClickListener {
+            justDismissedApp = appName // Mark as dismissed to prevent immediate re-popup
             removeOverlay()
             exitToHome() // Redirect user to Home screen
         }

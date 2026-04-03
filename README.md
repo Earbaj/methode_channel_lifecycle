@@ -269,8 +269,16 @@ import java.util.*
 class BackgroundUsageService : Service() {
 
     companion object {
-        fun resetUsage(context: Context) { /* SharedPreferences logic */ }
-        fun getManualResetTime(context: Context): Long { /* ... */ }
+        private const val PREFS_NAME = "ScreenTimePrefs"
+        private const val KEY_RESET_TIME = "manual_reset_time"
+        
+        fun resetUsage(context: Context) {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit().putLong(KEY_RESET_TIME, System.currentTimeMillis()).apply()
+        }
+        
+        fun getManualResetTime(context: Context): Long = 
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getLong(KEY_RESET_TIME, 0L)
     }
 
     private fun startMonitoring() {
@@ -278,26 +286,29 @@ class BackgroundUsageService : Service() {
         timer?.scheduleAtFixedRate(object : TimerTask() {
             override fun run() {
                 val currentApp = getForegroundApp()
-                if (targetPackages.contains(currentApp)) {
+                if (currentApp != justDismissedApp && targetPackages.contains(currentApp)) {
                     val dailyUsageMs = getAppUsageTime(currentApp!!)
                     if (dailyUsageMs/1000 >= dailyLimitSeconds) {
                         showBlockOverlay(currentApp, dailyUsageMs/1000)
                     } else {
-                        removeOverlay() // Auto-dismiss if limit not reached
+                        removeOverlay()
                     }
-                } else {
-                    removeOverlay() // Auto-dismiss if not in target app
+                } else if (currentApp != targetPackages.contains(currentApp)) {
+                    removeOverlay()
                 }
             }
         }, 0, 3000)
     }
 
     private fun getAppUsageTime(packageName: String): Long {
-        val midnight = midnightCalendar().timeInMillis
-        val manualReset = getManualResetTime(this)
-        val startTime = Math.max(midnight, manualReset)
-        // Use UsageEvents for strict accumulation after startTime
-        return calculateUsageFromEvents(packageName, startTime)
+        val midnight = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+        }.timeInMillis
+        val startTime = Math.max(midnight, getManualResetTime(this))
+        // Logic to sum usage from UsageEvents...
+        return totalTimeMs
     }
 }
 ```
